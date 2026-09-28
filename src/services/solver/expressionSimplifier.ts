@@ -3,6 +3,54 @@ import { Polynomial } from './polynomial';
 import { tokenize, Parser, astToPolynomial, nodeToTex, findVariables, ASTNode } from './ast';
 import { SolutionStep, SolverResult } from './equationSolver';
 
+export interface VariableEvalSpec {
+  baseExpr: string;
+  varName: string;
+  valStr: string;
+}
+
+/**
+ * Parses user input for evaluating an algebraic expression when a variable equals a number.
+ * Supports:
+ * - "2x + 5 when x = 3"
+ * - "2x + 5 for x = 3"
+ * - "2x + 5 where x = 3"
+ * - "2x + 5 with x = 3"
+ * - "2x + 5 at x = 3"
+ * - "2x + 5, x = 3"
+ * - "2x + 5; x = 3"
+ * - "when x = 3, 2x + 5"
+ * - "if x = 3, 2x + 5"
+ * - "x = 3, 2x + 5"
+ * - "x = 1/2, 4x + 6"
+ */
+export function parseVariableEvaluation(raw: string): VariableEvalSpec | null {
+  let s = raw.trim();
+  s = s.replace(/^(evaluate|eval|calculate)\s+/i, '').trim();
+
+  // Pattern 1: <expr> [when|for|where|with|at|,|;] <var> = <val>
+  const m1 = s.match(/^(.*?)(?:\s+(?:when|for|where|with|at)\s+|[,;]\s*)([a-zA-Z])\s*=\s*(-?\d+(?:\.\d+)?|-?\d+\s*\/\s*\d+|-\s*\\frac\{\d+\}\{\d+\}|\\frac\{\d+\}\{\d+\})$/i);
+  if (m1 && m1[1].trim() && !m1[1].includes('=')) {
+    return {
+      baseExpr: m1[1].trim(),
+      varName: m1[2],
+      valStr: m1[3].trim()
+    };
+  }
+
+  // Pattern 2: [when|if]? <var> = <val> [,;|then] <expr>
+  const m2 = s.match(/^(?:(?:when|if)\s+)?([a-zA-Z])\s*=\s*(-?\d+(?:\.\d+)?|-?\d+\s*\/\s*\d+|-\s*\\frac\{\d+\}\{\d+\}|\\frac\{\d+\}\{\d+\})(?:[,;]|\s+then|\s+evaluate|\s+find)\s+(.*?)$/i);
+  if (m2 && m2[3].trim() && !m2[3].includes('=')) {
+    return {
+      baseExpr: m2[3].trim(),
+      varName: m2[1],
+      valStr: m2[2].trim()
+    };
+  }
+
+  return null;
+}
+
 /**
  * Simplifies an algebraic or arithmetic expression step-by-step
  */
@@ -16,13 +64,10 @@ export function simplifyExpression(exprStr: string): SolverResult {
     cleanInput = cleanInput.replace(/^factor\b/i, '').trim();
   }
 
-  // Check for "for x = 3" or "where x = 3"
-  const evalMatch = cleanInput.match(/(.*?)(?:\s+for\s+|\s+where\s+|\s*,\s*)([a-zA-Z])\s*=\s*(-?\d+(?:\.\d+)?)/i);
-  if (evalMatch) {
-    const baseExpr = evalMatch[1].trim();
-    const varName = evalMatch[2];
-    const varValStr = evalMatch[3];
-    return evaluateExpressionForVariable(baseExpr, varName, varValStr, exprStr);
+  // Check for variable evaluation like "2x + 5 when x = 3"
+  const evalSpec = parseVariableEvaluation(cleanInput);
+  if (evalSpec) {
+    return evaluateExpressionForVariable(evalSpec.baseExpr, evalSpec.varName, evalSpec.valStr, exprStr);
   }
 
   // Parse AST
@@ -324,11 +369,18 @@ function factorPolynomial(poly: Polynomial, v: string, originalExpr: string, ste
 }
 
 /**
- * Evaluate expression for variable value: e.g. 2x + 5 for x = 3
+ * Evaluate expression for variable value: e.g. 2x + 5 when x = 3 or 3x^2 - 2x + 1 when x = 4
  */
-function evaluateExpressionForVariable(baseExpr: string, varName: string, valStr: string, originalExpr: string): SolverResult {
+export function evaluateExpressionForVariable(baseExpr: string, varName: string, valStr: string, originalExpr: string): SolverResult {
   const steps: SolutionStep[] = [];
-  const val = new Fraction(valStr);
+
+  // Normalize LaTeX fractions in valStr: e.g. \frac{1}{2} -> 1/2
+  let cleanValStr = valStr.trim();
+  const fracMatch = cleanValStr.match(/^(-?)\\frac\{(\d+)\}\{(\d+)\}$/);
+  if (fracMatch) {
+    cleanValStr = `${fracMatch[1] === '-' ? '-' : ''}${fracMatch[2]}/${fracMatch[3]}`;
+  }
+  const val = new Fraction(cleanValStr);
 
   const tokens = tokenize(baseExpr);
   const ast = new Parser(tokens).parse();
@@ -336,22 +388,66 @@ function evaluateExpressionForVariable(baseExpr: string, varName: string, valStr
 
   steps.push({
     title: "Given Expression and Variable Value",
-    explanation: `Evaluate the expression at $${varName} = ${val.toTex()}$.`,
-    math: `${rawTex}, \\quad ${varName} = ${val.toTex()}`
+    explanation: `We are given the algebraic expression and the specific value to substitute for the variable $${varName}$:`,
+    math: `${rawTex}, \\quad \\text{where } ${varName} = ${val.toTex()}`
   });
 
   const poly = astToPolynomial(ast, varName);
   const result = poly.evaluate(val);
 
-  steps.push({
-    title: "Substitute Variable Value",
-    explanation: `Replace every instance of $${varName}$ with $(${val.toTex()})$.`,
-    math: `${rawTex.replaceAll(varName, `(${val.toTex()})`)}`
-  });
+  // Substitute variable value
+  const valTex = val.toTex();
+  const valWithParens = val.isNegative() || !val.isInteger() ? `\\left(${valTex}\\right)` : `(${valTex})`;
+  const substitutedTex = rawTex.replaceAll(varName, valWithParens);
 
   steps.push({
-    title: "Calculate Final Result",
-    explanation: "Perform arithmetic according to order of operations.",
+    title: `Substitute ${varName} = ${valTex}`,
+    explanation: `Replace every instance of the variable $${varName}$ with $${valWithParens}$:`,
+    math: substitutedTex
+  });
+
+  // Intermediate order of operations breakdown
+  const sortedDegs = Array.from(poly.terms.keys()).sort((a, b) => b - a);
+
+  // Step A: Exponents (if any degree > 1)
+  const powerDegs = sortedDegs.filter(d => d > 1);
+  if (powerDegs.length > 0) {
+    const powerCalculations = powerDegs.map(deg => {
+      const pVal = val.pow(deg);
+      return `${valWithParens}^{${deg}} = ${pVal.toTex()}`;
+    });
+
+    steps.push({
+      title: "Evaluate Exponents (PEMDAS: E)",
+      explanation: "Calculate any powers first before performing multiplication:",
+      math: powerCalculations.join(', \\quad ')
+    });
+  }
+
+  // Step B: Multiplications
+  const nonConstDegs = sortedDegs.filter(d => d > 0);
+  if (nonConstDegs.length > 0) {
+    const multCalculations = nonConstDegs.map(deg => {
+      const coeff = poly.terms.get(deg)!;
+      const termVal = coeff.mul(val.pow(deg));
+      const powVal = val.pow(deg);
+      if (coeff.isOne()) {
+        return `${powVal.toTex()}`;
+      }
+      return `${coeff.toTex()} \\cdot ${powVal.isNegative() || !powVal.isInteger() ? `\\left(${powVal.toTex()}\\right)` : `(${powVal.toTex()})`} = ${termVal.toTex()}`;
+    });
+
+    steps.push({
+      title: "Perform Multiplication (PEMDAS: M)",
+      explanation: "Multiply each coefficient by the evaluated variable term:",
+      math: multCalculations.join(', \\quad ')
+    });
+  }
+
+  // Step C: Addition & Subtraction
+  steps.push({
+    title: "Combine All Terms (PEMDAS: AS)",
+    explanation: "Add and subtract the terms according to order of operations to obtain the final numerical value:",
     math: `= ${result.toTex()}`
   });
 

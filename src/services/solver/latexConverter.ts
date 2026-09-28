@@ -1,7 +1,28 @@
+import { tokenize, Parser, nodeToTex } from './ast';
+
 /**
- * Converts LaTeX math input into standard algebraic/arithmetic notation
- * that the internal CAS (AST, fraction solver, equation solver) can process.
+ * Converts mathematical text (including ASCII fractions like 21/z, 2^3/5)
+ * into formatted LaTeX representation using AST parsing and operator precedence.
  */
+export function toDisplayLatex(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+
+  // If equation with "=", process left and right sides
+  if (trimmed.includes("=")) {
+    const parts = trimmed.split("=");
+    return parts.map(p => toDisplayLatex(p)).join(" = ");
+  }
+
+  try {
+    const ascii = trimmed.includes("\\") || /[{}]/.test(trimmed) ? latexToAscii(trimmed) : trimmed;
+    const ast = new Parser(tokenize(ascii)).parse();
+    return nodeToTex(ast);
+  } catch {
+    return trimmed;
+  }
+}
+
 
 export function latexToAscii(rawInput: string): string {
   let s = rawInput.trim();

@@ -1,6 +1,10 @@
 import { solveEquation, SolutionStep, SolverResult } from './solver/equationSolver';
 import { simplifyExpression } from './solver/expressionSimplifier';
 import { 
+  parseEvaluationRequest, 
+  solveVariableEvaluation 
+} from './solver/variableEvaluator';
+import { 
   isFractionReductionInput, 
   isFractionArithmeticInput, 
   reduceSingleFraction, 
@@ -28,9 +32,21 @@ export async function solveAlgebra(rawInput: string): Promise<SolverResult> {
     input = stripped;
   }
 
+  // Check for variable evaluation (multiline with "\\", variables defined on separate lines)
+  const evalReq = parseEvaluationRequest(input);
+  if (evalReq) {
+    return solveVariableEvaluation(evalReq, rawInput);
+  }
+
   // If input contains LaTeX commands or braces, convert to ASCII algebra notation
   if (input.includes('\\') || /[{}]/.test(input)) {
     input = latexToAscii(input);
+  }
+
+  // Check again after LaTeX normalization
+  const normEvalReq = parseEvaluationRequest(input);
+  if (normEvalReq) {
+    return solveVariableEvaluation(normEvalReq, rawInput);
   }
 
   // Allow simulated tick to yield to React event loop
@@ -47,12 +63,7 @@ export async function solveAlgebra(rawInput: string): Promise<SolverResult> {
       return solveFractionArithmetic(input);
     }
 
-    // 3. Evaluate expression at a variable: e.g. "2x + 5 for x = 3"
-    if (/(?:\bfor\b|\bwhere\b)\s+[a-zA-Z]\s*=/i.test(input)) {
-      return simplifyExpression(input);
-    }
-
-    // 4. Equations containing '=': e.g. "2x + 5 = 15", "x/3 + 4 = 9", "(x+2)/3 = (2x-1)/5"
+    // 3. Equations containing '=': e.g. "2x + 5 = 15", "x/3 + 4 = 9", "(x+2)/3 = (2x-1)/5"
     if (input.includes('=')) {
       const parts = input.split('=');
       if (parts.length === 2) {
@@ -63,11 +74,12 @@ export async function solveAlgebra(rawInput: string): Promise<SolverResult> {
       }
     }
 
-    // 5. General algebraic expression expansion/simplification/PEMDAS
+    // 4. General algebraic expression expansion/simplification/PEMDAS
     return simplifyExpression(input);
   } catch (err: any) {
     console.error("Solver error:", err);
     throw new Error(err.message || "Could not solve the expression. Please check the mathematical syntax.");
   }
 }
+
 

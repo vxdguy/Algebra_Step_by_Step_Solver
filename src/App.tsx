@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Calculator, 
@@ -22,16 +22,69 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import katex from 'katex';
 import { solveAlgebra, SolverResult } from './services/algebraSolver';
+import { toDisplayLatex } from './services/solver/latexConverter';
 
 function renderLatexPreview(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return '';
 
   let previewTex = trimmed;
-  // If user entered command prefixes like "factor x^2 - 5x + 6", "simplify \frac{3x}{6}"
-  const cmdMatch = previewTex.match(/^(factor|simplify|solve|reduce)\s+(.*)$/i);
+
+  // 1. If user entered command prefixes like "factor x^2 - 5x + 6", "simplify \frac{3x}{6}"
+  const cmdMatch = previewTex.match(/^(factor|simplify|solve|reduce|evaluate|eval)\s+(.*)$/i);
   if (cmdMatch) {
-    previewTex = `\\text{${cmdMatch[1]} } ` + cmdMatch[2];
+    previewTex = `\\text{${cmdMatch[1]} } ` + toDisplayLatex(cmdMatch[2]);
+  }
+
+  // 2. Check for multiple lines using "\\" or literal "\n"
+  // Multiple lines when displayed always line up on the equal sign
+  // Prefer "\\" as the LaTeX newline indicator
+  let lines: string[] = [];
+  if (previewTex.includes('\\\\')) {
+    lines = previewTex.split('\\\\').map(l => l.replace(/\r?\n/g, ' ').trim()).filter(Boolean);
+  } else if (previewTex.includes('\n')) {
+    lines = previewTex.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  }
+
+  if (lines.length > 1) {
+    // Check if lines 0 to lines.length - 2 are "var = val"
+    const varDefs: string[] = [];
+    let isVarDef = true;
+    for (let i = 0; i < lines.length - 1; i++) {
+      const m = lines[i].match(/^([a-zA-Z])\s*=\s*(.*)$/);
+      if (m) {
+        varDefs.push(`${m[1]} = ${m[2].trim()}`);
+      } else {
+        isVarDef = false;
+        break;
+      }
+    }
+
+    if (isVarDef && varDefs.length > 0) {
+      let expr = lines[lines.length - 1].trim();
+      expr = expr.replace(/=\s*$/, '').trim(); // Remove trailing "=" for display
+      const alignedLines = varDefs.map(vd => {
+        const [v, ...valParts] = vd.split('=');
+        const val = valParts.join('=').trim();
+        return `${v.trim()} &= ${toDisplayLatex(val)}`;
+      });
+      // Display like "x=24\\2x+7=" in preview, align on "="
+      alignedLines.push(`${toDisplayLatex(expr)} &= `);
+      previewTex = `\\begin{aligned}\n${alignedLines.join(' \\\\\n')}\n\\end{aligned}`;
+    } else {
+      // General multiline alignment on "="
+      const aligned = lines.map(line => {
+        if (line.includes('&')) return line;
+        if (line.includes('=')) {
+          const parts = line.split('=');
+          return `${toDisplayLatex(parts[0].trim())} &= ${toDisplayLatex(parts.slice(1).join('=').trim())}`;
+        }
+        return toDisplayLatex(line);
+      });
+      previewTex = `\\begin{aligned}\n${aligned.join(' \\\\\n')}\n\\end{aligned}`;
+    }
+  } else if (!cmdMatch) {
+    previewTex = toDisplayLatex(previewTex);
   }
 
   try {
@@ -45,12 +98,61 @@ function renderLatexPreview(raw: string): string {
   }
 }
 
+function MathBlock({ math, className = '' }: { math: string; className?: string }) {
+  const html = useMemo(() => {
+    if (!math) return '';
+    try {
+      return katex.renderToString(math.trim(), {
+        displayMode: true,
+        throwOnError: false,
+        strict: false
+      });
+    } catch {
+      return `<span class="katex-error font-mono text-xs text-red-500">${math}</span>`;
+    }
+  }, [math]);
+
+  return (
+    <div 
+      className={`katex-math-block overflow-x-auto ${className}`}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
+function InlineMath({ math, className = '' }: { math: string; className?: string }) {
+  const html = useMemo(() => {
+    if (!math) return '';
+    try {
+      return katex.renderToString(math.trim(), {
+        displayMode: false,
+        throwOnError: false,
+        strict: false
+      });
+    } catch {
+      return `<span class="katex-error font-mono text-xs text-red-500">${math}</span>`;
+    }
+  }, [math]);
+
+  return (
+    <span 
+      className={`inline-math ${className}`}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
+interface HistoryItem {
+  rawInput: string;
+  result: SolverResult;
+}
+
 export default function App() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<SolverResult | null>(null);
-  const [history, setHistory] = useState<SolverResult[]>([]);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
   const resultRef = useRef<HTMLDivElement>(null);
 
   const handleSolve = async (e?: React.FormEvent, customInput?: string) => {
@@ -64,8 +166,8 @@ export default function App() {
       const solution = await solveAlgebra(targetExpr);
       setResult(solution);
       setHistory(prev => {
-        const filtered = prev.filter(p => p.expression !== solution.expression);
-        return [solution, ...filtered.slice(0, 8)];
+        const filtered = prev.filter(p => p.rawInput !== targetExpr);
+        return [{ rawInput: targetExpr, result: solution }, ...filtered.slice(0, 8)];
       });
       if (customInput === undefined) {
         setInput('');
@@ -86,6 +188,16 @@ export default function App() {
   const clearHistory = () => setHistory([]);
 
   const exampleCategories = [
+    {
+      category: "Evaluate for Variables (Linebreak)",
+      examples: [
+        "x=\\frac{2y}{3} \\\\ y=21/z \\\\ z=3 \\\\ 2x+3y+4z",
+        "x = 24 \\\\ 2x + 7",
+        "x = 4 \\\\ 2x^2 + 5x",
+        "x = 3 \\\\ y = 4 \\\\ 2x + 3y",
+        "x = -3 \\\\ x^2 - 9"
+      ]
+    },
     {
       category: "Fraction Reduction",
       examples: ["10/2", "\\frac{3x}{6}", "11/3", "12/8", "\\frac{6x + 9}{3}"]
@@ -155,7 +267,7 @@ export default function App() {
                   <textarea
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
-                    placeholder="e.g., \frac{3x}{6} or 2x + 5 = 15 or \frac{1}{2} + \frac{2}{3}"
+                    placeholder="e.g., x = 24 \\ 2x + 7 = or x = 4 \\ 2x^2 + 5x = or \frac{3x}{6}"
                     className="w-full h-28 p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-zinc-900 focus:border-transparent transition-all resize-none font-mono text-sm leading-relaxed"
                     disabled={loading}
                   />
@@ -249,12 +361,18 @@ export default function App() {
                   {history.map((item, idx) => (
                     <button
                       key={idx}
-                      onClick={() => setResult(item)}
+                      onClick={() => {
+                        setInput(item.rawInput);
+                        setResult(item.result);
+                      }}
                       className="w-full text-left p-4 bg-white border border-zinc-200 rounded-xl hover:border-zinc-400 transition-all group shadow-xs"
                     >
-                      <p className="font-mono text-sm truncate text-zinc-600 mb-1">{item.expression}</p>
+                      <p className="font-mono text-sm truncate text-zinc-600 mb-1">{item.rawInput}</p>
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-zinc-900">Answer: {item.finalAnswer}</span>
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-zinc-900">
+                          <span>Answer:</span>
+                          <InlineMath math={item.result.finalAnswer} />
+                        </div>
                         <ChevronRight size={14} className="text-zinc-300 group-hover:text-zinc-900 transition-colors" />
                       </div>
                     </button>
@@ -317,23 +435,14 @@ export default function App() {
                     </div>
                     <div className="relative z-10">
                       <span className="text-[10px] uppercase tracking-[0.2em] font-bold text-zinc-400">Solution Found</span>
-                      <div className="text-3xl font-mono mt-2 mb-6 break-words markdown-body invert-math">
-                        <Markdown 
-                          remarkPlugins={[remarkMath]} 
-                          rehypePlugins={[rehypeKatex]}
-                        >
-                          {`$$${result.expression}$$`}
-                        </Markdown>
+                      <div className="text-3xl font-mono mt-2 mb-6 break-words invert-math">
+                        <MathBlock math={result.expression} />
                       </div>
                       <div className="flex items-center gap-3 bg-white/10 w-fit px-4 py-2 rounded-lg border border-white/10">
                         <CheckCircle2 size={20} className="text-emerald-400" />
-                        <div className="text-xl font-bold markdown-body invert-math">
-                          <Markdown 
-                            remarkPlugins={[remarkMath]} 
-                            rehypePlugins={[rehypeKatex]}
-                          >
-                            {`Answer: $${result.finalAnswer}$`}
-                          </Markdown>
+                        <div className="text-xl font-bold invert-math flex items-center gap-1.5">
+                          <span>Answer:</span>
+                          <InlineMath math={result.finalAnswer} />
                         </div>
                       </div>
                     </div>
@@ -373,14 +482,7 @@ export default function App() {
                             </Markdown>
                           </div>
                           <div className="math-display">
-                            <div className="markdown-body">
-                              <Markdown 
-                                remarkPlugins={[remarkMath]} 
-                                rehypePlugins={[rehypeKatex]}
-                              >
-                                {`$$${step.math}$$`}
-                              </Markdown>
-                            </div>
+                            <MathBlock math={step.math} />
                           </div>
                         </div>
                       </motion.div>
@@ -394,15 +496,10 @@ export default function App() {
                     </div>
                     <div>
                       <h4 className="font-bold text-emerald-900">Final Result Verified</h4>
-                      <div className="text-emerald-700 text-sm flex items-center gap-1 flex-wrap">
+                      <div className="text-emerald-700 text-sm flex items-center gap-1.5 flex-wrap">
                         <span>The expression has been solved completely. Final value is</span>
-                        <div className="inline-block font-bold markdown-body">
-                          <Markdown 
-                            remarkPlugins={[remarkMath]} 
-                            rehypePlugins={[rehypeKatex]}
-                          >
-                            {`$${result.finalAnswer}$`}
-                          </Markdown>
+                        <div className="inline-block font-bold">
+                          <InlineMath math={result.finalAnswer} />
                         </div>
                       </div>
                     </div>
@@ -420,7 +517,7 @@ export default function App() {
                     </p>
                   </div>
                   <div className="flex flex-wrap justify-center gap-2 max-w-lg">
-                    {['\\frac{3x}{6}', '\\frac{10}{2}', '11/3', '\\frac{1}{2} + \\frac{2}{3}', '2x + 5 = 15', '\\frac{x + 2}{3} = 4'].map(ex => (
+                    {['x = \\frac{2y}{3} \\\\ y = 21/z \\\\ z = 3 \\\\ 2x + 3y + 4z', 'x = 24 \\\\ 2x + 7', 'x = 4 \\\\ 2x^2 + 5x', '\\frac{3x}{6}', '\\frac{1}{2} + \\frac{2}{3}', '2x + 5 = 15'].map(ex => (
                       <button
                         key={ex}
                         onClick={() => {
