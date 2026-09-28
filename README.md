@@ -23,16 +23,24 @@ Unlike black-box AI calculators or decimal approximations, this engine uses a de
   - Clearing fractional denominators in Step 1 using $\text{LCD}$
   - Isolating variable terms and constants step-by-step
   - Exact radical simplification ($a\sqrt{b}$) for quadratic roots:
-    $$x^2 - 48 = 0 \implies x = \pm 4\sqrt{3}$$
+
+$$
+x^2 - 48 = 0 \implies x = \pm 4\sqrt{3}
+$$
+
 - **Multi-Variable System Dependency Resolution**:
   - Solves interdependent variable systems (e.g. $x = \frac{2y}{3}$, $y = \frac{21}{z}$, $z = 3$) topologically
   - Restates all solved numerical values before substituting into target expressions
   - Progressively builds multi-line evaluation chains line-by-line:
-    $$\begin{aligned}
-    2x + 3y + 4z &= 2\left(\frac{14}{3}\right) + 3(7) + 4(3) \\
-    2\left(\frac{14}{3}\right) + 3(7) + 4(3) &= \frac{28}{3} + 21 + 12 \\
-    \frac{28}{3} + 21 + 12 &= \frac{127}{3}
-    \end{aligned}$$
+
+$$
+\begin{aligned}
+2x + 3y + 4z &= 2\left(\frac{14}{3}\right) + 3(7) + 4(3) \\
+2\left(\frac{14}{3}\right) + 3(7) + 4(3) &= \frac{28}{3} + 21 + 12 \\
+\frac{28}{3} + 21 + 12 &= \frac{127}{3}
+\end{aligned}
+$$$
+    
 - **Real-Time LaTeX Math Preview**:
   - Instant live rendering via KaTeX
   - Seamless support for both raw LaTeX syntax (e.g. `\frac{3x}{6}`) and standard ASCII notation (e.g. `21/z`, `2^3/5`)
